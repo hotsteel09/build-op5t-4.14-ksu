@@ -1,16 +1,21 @@
-name: Build Kernel with KernelSU
+name: Build OnePlus 5T Kernel with KernelSU
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # 允许手动触发
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'Defconfig name (without _defconfig suffix)'
+        required: false
+        default: ''
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120  # 编译可能耗时较长
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
 
     steps:
     - name: Checkout kernel source
@@ -18,56 +23,216 @@ jobs:
       with:
         repository: ederevx/x-ft_kernel_oneplus_msm8998
         submodules: recursive
+        path: kernel
+
+    - name: List available defconfigs
+      id: list-defconfigs
+      run: |
+        cd kernel
+        echo "Available defconfigs in arch/arm64/configs/:"
+        ls -la arch/arm64/configs/ || echo "arm64 configs not found"
+        echo ""
+        echo "Available defconfigs in arch/arm/configs/:"
+        ls -la arch/arm/configs/ || echo "arm configs not found"
+        echo ""
+        echo "Available defconfigs in arch/:"
+        find arch/ -name "*defconfig" -type f | head -20
+        
+        # 尝试找到与oneplus或msm8998相关的配置
+        echo ""
+        echo "Searching for oneplus/msm8998 related configs:"
+        find arch/ -name "*defconfig" -type f | grep -i -E "(oneplus|msm8998|cheeseburger|dumpling)" || true
+        
+        # 列出所有可能的defconfig
+        echo ""
+        echo "All defconfig files found:"
+        find arch/ -name "*defconfig" -type f
 
     - name: Setup KernelSU v0.9.5
       run: |
+        cd kernel
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+        echo "KernelSU setup completed"
 
     - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
-          libncurses-dev \
+          libncurses5-dev \
           bison \
           flex \
           libssl-dev \
           libelf-dev \
           bc \
           git \
-          gcc-aarch64-linux-gnu
+          wget \
+          curl \
+          python3 \
+          gcc-aarch64-linux-gnu \
+          libncurses-dev
+        # 验证工具链
+        aarch64-linux-gnu-gcc --version || true
 
     - name: Setup toolchain
+      id: toolchain
       run: |
-        # 下载或使用预置的交叉编译工具链
-        # 这里使用aarch64-linux-gnu-gcc，可根据实际需要替换
-        # 如果内核源码已有工具链配置，可跳过此步
-        echo "Toolchain setup completed"
+        # 使用ARM官方GCC工具链（适用于4.14内核）
+        cd /tmp
+        wget https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz
+        tar -xf gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz
+        echo "TC_PATH=/tmp/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-none-linux-gnu-" >> $GITHUB_ENV
+        echo "${{ env.TC_PATH }}/aarch64-none-linux-gnu-gcc --version"
+
+    - name: Try common defconfigs
+      id: try-config
+      run: |
+        cd kernel
+        # 尝试常见的defconfig名称
+        DEFCONFIGS=(
+          "oneplus5_defconfig"
+          "oneplus5t_defconfig"
+          "cheeseburger_defconfig"
+          "dumpling_defconfig"
+          "msm8998-oneplus5_defconfig"
+          "msm8998-oneplus5t_defconfig"
+          "msm8998_defconfig"
+          "perf_defconfig"
+          "vendor/msm8998-perf_defconfig"
+          "vendor/oneplus5-perf_defconfig"
+        )
+        
+        for config in "${DEFCONFIGS[@]}"; do
+          if [ -f "arch/arm64/configs/$config" ]; then
+            echo "Found defconfig: $config"
+            echo "DEFCONFIG=$config" >> $GITHUB_ENV
+            echo "ARCH=arm64" >> $GITHUB_ENV
+            break
+          fi
+        done
+        
+        # 如果没找到，尝试ARM架构
+        if [ -z "$DEFCONFIG" ]; then
+          for config in "${DEFCONFIGS[@]}"; do
+            if [ -f "arch/arm/configs/$config" ]; then
+              echo "Found defconfig: $config (ARM)"
+              echo "DEFCONFIG=$config" >> $GITHUB_ENV
+              echo "ARCH=arm" >> $GITHUB_ENV
+              break
+            fi
+          done
+        fi
+        
+        # 如果还是没找到，使用第一个找到的defconfig
+        if [ -z "$DEFCONFIG" ]; then
+          FIRST_CONFIG=$(find arch/ -name "*defconfig" -type f | head -1)
+          if [ -n "$FIRST_CONFIG" ]; then
+            CONFIG_NAME=$(basename "$FIRST_CONFIG")
+            echo "Using first found defconfig: $CONFIG_NAME"
+            echo "DEFCONFIG=$CONFIG_NAME" >> $GITHUB_ENV
+            if [[ "$FIRST_CONFIG" == *"arm64"* ]]; then
+              echo "ARCH=arm64" >> $GITHUB_ENV
+            else
+              echo "ARCH=arm" >> $GITHUB_ENV
+            fi
+          else
+            echo "ERROR: No defconfig found!"
+            exit 1
+          fi
+        fi
+        
+        echo "Using ARCH: $ARCH, DEFCONFIG: $DEFCONFIG"
 
     - name: Configure kernel
       run: |
-        # 根据实际内核配置方式执行，这里以defconfig为例
-        # 需要根据实际设备调整ARCH和defconfig名称
-        make ARCH=arm64 O=out oneplus_msm8998_defconfig
+        cd kernel
+        echo "Configuring kernel with $ARCH and $DEFCONFIG"
+        echo "CROSS_COMPILE: $CROSS_COMPILE"
+        
+        # 清理之前的配置
+        make clean || true
+        make mrproper || true
+        
+        # 生成配置
+        if [[ "$DEFCONFIG" == *"/"* ]]; then
+          # 如果defconfig包含路径
+          make O=out ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE ${DEFCONFIG##*/}
+        else
+          make O=out ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE $DEFCONFIG
+        fi
+        
+        # 检查生成的.config文件
+        if [ -f "out/.config" ]; then
+          echo "Configuration generated successfully"
+          echo "Config size: $(wc -l < out/.config) lines"
+        else
+          echo "ERROR: Failed to generate .config"
+          exit 1
+        fi
 
     - name: Build kernel
       run: |
-        make ARCH=arm64 O=out -j$(nproc) 2>&1 | tee build.log
+        cd kernel
+        echo "Building kernel with $CROSS_COMPILE"
+        echo "Using $(nproc) CPU cores"
+        
+        # 编译内核
+        time make O=out ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE -j$(nproc) 2>&1 | tee build.log
+        
+        # 检查编译结果
+        if [ -f "out/arch/$ARCH/boot/Image.gz-dtb" ]; then
+          echo "✅ Build successful! Found Image.gz-dtb"
+        elif [ -f "out/arch/$ARCH/boot/zImage-dtb" ]; then
+          echo "✅ Build successful! Found zImage-dtb"
+        elif [ -f "out/arch/$ARCH/boot/Image" ]; then
+          echo "✅ Build successful! Found Image"
+        elif [ -f "out/arch/$ARCH/boot/zImage" ]; then
+          echo "✅ Build successful! Found zImage"
+        else
+          echo "❌ Build failed! No kernel image found"
+          echo "Last 50 lines of build.log:"
+          tail -50 build.log
+          exit 1
+        fi
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-build-output
+        name: kernel-build-${{ github.run_number }}
         path: |
-          out/arch/arm64/boot/Image.gz-dtb
-          build.log
-        retention-days: 7
+          kernel/out/arch/
+          kernel/build.log
+          kernel/out/.config
+        retention-days: 30
 
-    - name: Check build status
+    - name: Create AnyKernel3 zip
+      if: success()
       run: |
-        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-          echo "Build successful!"
-        else
-          echo "Build failed!"
-          exit 1
+        cd kernel
+        # 下载AnyKernel3模板
+        wget https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip -O AnyKernel3.zip
+        unzip -q AnyKernel3.zip -d anykernel3/
+        rm AnyKernel3.zip
+        
+        # 复制内核镜像
+        if [ -f "out/arch/$ARCH/boot/Image.gz-dtb" ]; then
+          cp out/arch/$ARCH/boot/Image.gz-dtb anykernel3/Image.gz-dtb
+        elif [ -f "out/arch/$ARCH/boot/zImage-dtb" ]; then
+          cp out/arch/$ARCH/boot/zImage-dtb anykernel3/zImage-dtb
+        elif [ -f "out/arch/$ARCH/boot/Image" ]; then
+          cp out/arch/$ARCH/boot/Image anykernel3/Image
         fi
+        
+        # 创建刷机包
+        cd anykernel3/AnyKernel3-master
+        zip -r9 ../../kernel-flashable.zip * -x .git
+        
+        echo "Flashable zip created"
+
+    - name: Upload flashable zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: flashable-kernel-${{ github.run_number }}
+        path: kernel/kernel-flashable.zip
+        retention-days: 30
