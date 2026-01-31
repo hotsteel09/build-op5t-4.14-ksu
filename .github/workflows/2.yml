@@ -1,0 +1,79 @@
+name: Build Android Kernel with KernelSU
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        repository: ederevx/x-ft_kernel_oneplus_msm8998
+        submodules: recursive
+
+    - name: Setup KernelSU
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+
+    - name: Install Android build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libncurses-dev \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          bc \
+          git \
+          wget \
+          python3 \
+          ccache
+
+    - name: Download Android toolchain
+      run: |
+        cd /tmp
+        # 下载Android预编译工具链
+        wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz
+        mkdir -p android-toolchain
+        tar -xzf master.tar.gz -C android-toolchain
+        
+        # 或者使用Google的AOSP GCC
+        wget https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-android/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-android.tar.xz
+        tar -xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-android.tar.xz
+        
+        echo "PATH=/tmp/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-android/bin:$PATH" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+        echo "ARCH=arm64" >> $GITHUB_ENV
+
+    - name: Make kernel config
+      run: |
+        
+        # 使用默认配置
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- defconfig
+
+    - name: Build kernel
+      run: |
+        # 编译内核
+        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-android-
+
+    - name: List output files
+      run: |
+        echo "Kernel build output:"
+        find arch/arm64/boot/ -type f 2>/dev/null || true
+        echo ""
+        ls -la arch/arm64/boot/ 2>/dev/null || echo "No output directory"
+
+    - name: Upload kernel image
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-kernel
+        path: arch/arm64/boot/
+        retention-days: 7
