@@ -1,16 +1,14 @@
-name: Build OnePlus 5T Kernel with KernelSU
+name: Build Kernel with KernelSU
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # 手动触发
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
     - name: Checkout kernel source
@@ -18,23 +16,12 @@ jobs:
       with:
         repository: ederevx/x-ft_kernel_oneplus_msm8998
         submodules: recursive
-        path: kernel
 
-    - name: Verify kernel structure
+    - name: Setup KernelSU
       run: |
-        cd kernel
-        echo "Defconfig location:"
-        ls -la arch/arm64/configs/defconfig || echo "defconfig not found"
-        echo "Kernel Makefile version:"
-        head -5 Makefile
-
-    - name: Setup KernelSU v0.9.5
-      run: |
-        cd kernel
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-        echo "KernelSU v0.9.5 setup completed"
 
-    - name: Install build dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -46,78 +33,30 @@ jobs:
           libelf-dev \
           bc \
           git \
-          wget \
-          curl \
-          python3 \
-          gcc-aarch64-linux-gnu
+          wget
 
     - name: Setup toolchain
       run: |
-        # 使用ARM GCC 10.3工具链
-        TOOLCHAIN_DIR="/tmp/arm-gcc-10.3"
-        mkdir -p $TOOLCHAIN_DIR
-        cd $TOOLCHAIN_DIR
-        wget -q https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz
-        tar -xf gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz
-        
-        # 设置环境变量
-        export PATH="$TOOLCHAIN_DIR/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin:$PATH"
-        echo "CROSS_COMPILE=aarch64-none-linux-gnu-" >> $GITHUB_ENV
+        cd /tmp
+        wget https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+        tar -xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+        echo "PATH=/tmp/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin:$PATH" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
         echo "ARCH=arm64" >> $GITHUB_ENV
-        
-        # 验证工具链
-        aarch64-none-linux-gnu-gcc --version
 
-    - name: Configure kernel
+    - name: Make config
       run: |
-        cd kernel
-        echo "Configuring kernel..."
         make clean || true
-        make mrproper || true
-        rm -rf out || true
-        
-        # 使用defconfig配置
-        make O=out ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- defconfig
-        
-        if [ -f "out/.config" ]; then
-          echo "✅ Configuration successful"
-        else
-          echo "❌ Configuration failed"
-          exit 1
-        fi
+        make defconfig ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
-    - name: Build kernel
+    - name: Make kernel
       run: |
-        cd kernel
-        echo "Building kernel..."
-        
-        # 编译内核
-        time make O=out ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- -j$(nproc) 2>&1 | tee build.log
-        
-        # 检查内核镜像
-        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-          echo "✅ Build successful: Image.gz-dtb"
-          IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-        elif [ -f "out/arch/arm64/boot/Image" ]; then
-          echo "✅ Build successful: Image"
-          IMAGE="out/arch/arm64/boot/Image"
-        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-          echo "✅ Build successful: Image.gz"
-          IMAGE="out/arch/arm64/boot/Image.gz"
-        else
-          echo "❌ Build failed - no kernel image found"
-          echo "Last 50 lines of build.log:"
-          tail -50 build.log
-          exit 1
-        fi
-        
-        echo "Kernel image: $IMAGE"
-        ls -lh "$IMAGE"
+        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
-    - name: Upload kernel image
+    - name: Upload kernel
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-image
+        name: kernel
         path: |
-          kernel/out/arch/arm64/boot/
+          arch/arm64/boot/
         retention-days: 7
