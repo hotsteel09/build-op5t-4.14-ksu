@@ -1,16 +1,14 @@
-name: Build Kernel with KernelSU
+name: Build Kernel with KernelSU (4.14内核)
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 编译可能耗时较长
+    timeout-minutes: 120
 
     steps:
     - name: Checkout kernel source
@@ -31,8 +29,6 @@ jobs:
           libelf-dev \
           bc \
           git \
-          curl \
-          wget \
           gcc-aarch64-linux-gnu \
           binutils-aarch64-linux-gnu
 
@@ -40,51 +36,102 @@ jobs:
       run: |
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s builtin
-    
-    - name: Apply manual hooks patch
+
+    - name: Apply manual hooks for 4.14 kernel
       run: |
         cd kernel
-        # 下载并应用补丁
-        wget -O manual_hooks.patch https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/patches/manual_hooks.patch
-        patch -p1 < manual_hooks.patch || echo "Patch may have conflicts, check manually"
         
-        # 如果补丁失败，尝试使用git apply的宽松模式
-        git apply --reject --whitespace=fix manual_hooks.patch 2>/dev/null || true
+        # 1. 修改 fs/exec.c - 4.14内核的execveat钩子
+        # 注意：4.14内核使用do_execveat_common函数，参数签名不同
+        cat << 'EOF' >> fs/exec.c
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        __attribute__((hot))
+        extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+                void *argv, void *envp, int *flags);
+        #endif
+        EOF
         
-        # 检查是否成功应用
-        if ! grep -q "CONFIG_KSU_MANUAL_HOOK" .config 2>/dev/null; then
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
-        fi
-    
-    - name: Configure kernel with KernelSU options
+        # 在do_execveat_common函数中添加调用（4.14内核位置）
+        # 注意：4.14内核的do_execveat_common函数签名与4.19+不同
+        sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/a\
+        #ifdef CONFIG_KSU_MANUAL_HOOK\
+        ksu_handle_execveat(&fd, &filename, argv, envp, &flags);\
+        #endif' fs/exec.c
+
+        # 2. 修改 fs/stat.c - 4.14内核的stat钩子
+        # 4.14内核使用vfs_fstatat函数，不是vfs_statx
+        cat << 'EOF' >> fs/stat.c
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        __attribute__((hot)) 
+        extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
+                int *flags);
+        #endif
+        EOF
+        
+        # 在vfs_fstatat函数中添加调用（4.14内核）
+        sed -i '/int vfs_fstatat(int dfd, const char __user \*filename, struct kstat \*stat,/a\
+        #ifdef CONFIG_KSU_MANUAL_HOOK\
+        ksu_handle_stat(&dfd, &filename, &flag);\
+        #endif' fs/stat.c
+
+        # 3. 修改 kernel/reboot.c - reboot钩子（与4.19+相同）
+        cat << 'EOF' >> kernel/reboot.c
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+        #endif
+        EOF
+        
+        sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/a\
+        #ifdef CONFIG_KSU_MANUAL_HOOK\
+        ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+        #endif' kernel/reboot.c
+        
+        # 4. 修改 fs/open.c - 4.14内核的faccessat钩子
+        # 4.14内核使用do_faccessat函数，不是faccessat系统调用
+        cat << 'EOF' >> fs/open.c
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        __attribute__((hot)) 
+        extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+                int *mode, int *flags);
+        #endif
+        EOF
+        
+        # 在do_faccessat函数中添加调用（4.14内核）
+        sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode)/a\
+        #ifdef CONFIG_KSU_MANUAL_HOOK\
+        ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+        #endif' fs/open.c
+
+        # 5. 额外：4.14内核可能需要vfs_read钩子（如果配置要求）
+        # 检查是否需要，根据实际编译错误决定
+
+    - name: Configure kernel
       run: |
         cd kernel
-        # 确保配置包含KernelSU
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        
         if [ -f "arch/arm64/configs/oneplus_msm8998_defconfig" ]; then
           make oneplus_msm8998_defconfig
         else
           make defconfig
         fi
+        
+        # 启用KernelSU配置
         echo "CONFIG_KSU=y" >> .config
         echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
         make olddefconfig
-
 
     - name: Build kernel
       run: |
         cd kernel
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # 启用并行编译加速
         make -j$(nproc)
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: kernel-build-output
-        path: |
-          kernel/arch/arm64/boot/Image.gz-dtb
-          kernel/arch/arm64/boot/Image
-          kernel/arch/arm64/boot/dts/qcom/*.dtb
-        if-no-files-found: error
+        path: kernel/arch/arm64/boot/Image*
         retention-days: 7
