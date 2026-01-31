@@ -46,7 +46,6 @@ jobs:
 
     - name: Make config
       run: |
-        make clean || true
         make defconfig ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
     - name: Make kernel
