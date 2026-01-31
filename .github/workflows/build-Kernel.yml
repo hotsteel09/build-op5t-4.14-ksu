@@ -41,69 +41,115 @@ jobs:
       run: |
         cd kernel
         
-        # 1. 修改 fs/exec.c - 4.14内核的execveat钩子
-        # 注意：4.14内核使用do_execveat_common函数，参数签名不同
-        cat << 'EOF' >> fs/exec.c
+        echo "应用4.14内核手动钩子补丁..."
+        
+        # 1. 修改 fs/exec.c - execveat钩子
+        if [ -f "fs/exec.c" ]; then
+          echo "修改fs/exec.c..."
+          # 添加函数声明
+          cat << 'EOF' >> fs/exec.c
         #ifdef CONFIG_KSU_MANUAL_HOOK
         __attribute__((hot))
         extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
                 void *argv, void *envp, int *flags);
         #endif
         EOF
-        
-        # 在do_execveat_common函数中添加调用（4.14内核位置）
-        # 注意：4.14内核的do_execveat_common函数签名与4.19+不同
-        sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/a\
+          
+          # 在do_execveat_common函数中添加调用
+          sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/a\
         #ifdef CONFIG_KSU_MANUAL_HOOK\
         ksu_handle_execveat(&fd, &filename, argv, envp, &flags);\
         #endif' fs/exec.c
+        fi
 
-        # 2. 修改 fs/stat.c - 4.14内核的stat钩子
-        # 4.14内核使用vfs_fstatat函数，不是vfs_statx
-        cat << 'EOF' >> fs/stat.c
+        # 2. 修改 fs/stat.c - stat钩子
+        if [ -f "fs/stat.c" ]; then
+          echo "修改fs/stat.c..."
+          # 添加函数声明
+          cat << 'EOF' >> fs/stat.c
         #ifdef CONFIG_KSU_MANUAL_HOOK
         __attribute__((hot)) 
         extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
                 int *flags);
+        extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
+        #if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+        extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
+        #endif
         #endif
         EOF
-        
-        # 在vfs_fstatat函数中添加调用（4.14内核）
-        sed -i '/int vfs_fstatat(int dfd, const char __user \*filename, struct kstat \*stat,/a\
+          
+          # 在vfs_fstatat函数中添加调用
+          sed -i '/int vfs_fstatat(int dfd, const char __user \*filename, struct kstat \*stat,/a\
         #ifdef CONFIG_KSU_MANUAL_HOOK\
         ksu_handle_stat(&dfd, &filename, &flag);\
         #endif' fs/stat.c
+        fi
 
-        # 3. 修改 kernel/reboot.c - reboot钩子（与4.19+相同）
-        cat << 'EOF' >> kernel/reboot.c
+        # 3. 修改 kernel/reboot.c - reboot钩子
+        if [ -f "kernel/reboot.c" ]; then
+          echo "修改kernel/reboot.c..."
+          # 添加函数声明
+          cat << 'EOF' >> kernel/reboot.c
         #ifdef CONFIG_KSU_MANUAL_HOOK
         extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
         #endif
         EOF
-        
-        sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/a\
+          
+          sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/a\
         #ifdef CONFIG_KSU_MANUAL_HOOK\
         ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
         #endif' kernel/reboot.c
+        fi
         
-        # 4. 修改 fs/open.c - 4.14内核的faccessat钩子
-        # 4.14内核使用do_faccessat函数，不是faccessat系统调用
-        cat << 'EOF' >> fs/open.c
+        # 4. 修改 fs/open.c - faccessat钩子
+        if [ -f "fs/open.c" ]; then
+          echo "修改fs/open.c..."
+          # 添加函数声明
+          cat << 'EOF' >> fs/open.c
         #ifdef CONFIG_KSU_MANUAL_HOOK
         __attribute__((hot)) 
         extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
                 int *mode, int *flags);
         #endif
         EOF
-        
-        # 在do_faccessat函数中添加调用（4.14内核）
-        sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode)/a\
+          
+          sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode)/a\
         #ifdef CONFIG_KSU_MANUAL_HOOK\
         ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
         #endif' fs/open.c
+        fi
 
-        # 5. 额外：4.14内核可能需要vfs_read钩子（如果配置要求）
-        # 检查是否需要，根据实际编译错误决定
+        # 5. 关键：添加vfs_read钩子（必须，4.14内核需要）
+        if [ -f "fs/read_write.c" ]; then
+          echo "修改fs/read_write.c（添加vfs_read钩子）..."
+          # 添加函数声明
+          cat << 'EOF' >> fs/read_write.c
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        extern bool ksu_sys_read_hook __read_mostly;
+        extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
+                char __user **buf_ptr, size_t *count_ptr);
+        #endif
+        EOF
+          
+          # 在SYSCALL_DEFINE3(read)函数中添加调用
+          sed -i '/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)/a\
+        #ifdef CONFIG_KSU_MANUAL_HOOK\
+        if (unlikely(ksu_sys_read_hook)) \
+            ksu_handle_sys_read(fd, &buf, &count);\
+        #endif' fs/read_write.c
+          
+          # 如果上面的sed失败，尝试另一种模式
+          if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+            echo "尝试另一种sed模式..."
+            sed -i 's/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)\n\
+#ifdef CONFIG_KSU_MANUAL_HOOK\n\
+if (unlikely(ksu_sys_read_hook))\n\
+    ksu_handle_sys_read(fd, &buf, &count);\n\
+#endif/' fs/read_write.c
+          fi
+        else
+          echo "警告：fs/read_write.c 文件不存在！"
+        fi
 
     - name: Configure kernel
       run: |
@@ -111,27 +157,61 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         
+        # 检查设备特定配置
+        echo "可用的defconfig文件："
+        ls -la arch/arm64/configs/ || echo "无法列出configs目录"
+        
+        # 使用设备配置或默认配置
         if [ -f "arch/arm64/configs/oneplus_msm8998_defconfig" ]; then
+          echo "使用 oneplus_msm8998_defconfig..."
           make oneplus_msm8998_defconfig
-        else
+        elif [ -f "arch/arm64/configs/msm8998_defconfig" ]; then
+          echo "使用 msm8998_defconfig..."
+          make msm8998_defconfig
+        elif [ -f "arch/arm64/configs/defconfig" ]; then
+          echo "使用默认defconfig..."
           make defconfig
+        else
+          echo "使用arch默认配置..."
+          make ARCH=arm64 defconfig
         fi
         
         # 启用KernelSU配置
+        echo "启用KernelSU配置..."
         echo "CONFIG_KSU=y" >> .config
         echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
         make olddefconfig
+        
+        # 验证配置
+        echo "KernelSU配置状态："
+        grep -E "CONFIG_KSU|CONFIG_KSU_MANUAL_HOOK" .config || true
 
     - name: Build kernel
       run: |
         cd kernel
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        make -j$(nproc)
+        
+        echo "开始编译内核..."
+        make -j$(nproc) 2>&1 | tee build.log || {
+          echo "编译失败，检查日志..."
+          tail -100 build.log
+          exit 1
+        }
 
-    - name: Upload artifacts
+    - name: Upload kernel artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-build-output
-        path: kernel/arch/arm64/boot/Image*
+        name: kernel-images
+        path: kernel/arch/arm64/boot/
+        retention-days: 7
+
+    - name: Upload build logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          kernel/build.log
+          kernel/.config
         retention-days: 7
