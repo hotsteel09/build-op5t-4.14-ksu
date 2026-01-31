@@ -40,18 +40,35 @@ jobs:
       run: |
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s builtin
-
-    - name: Configure kernel
+    
+    - name: Apply manual hooks patch
       run: |
         cd kernel
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        # 使用默认配置或设备特定配置（如果存在）
+        # 下载并应用补丁
+        wget -O manual_hooks.patch https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/patches/manual_hooks.patch
+        patch -p1 < manual_hooks.patch || echo "Patch may have conflicts, check manually"
+        
+        # 如果补丁失败，尝试使用git apply的宽松模式
+        git apply --reject --whitespace=fix manual_hooks.patch 2>/dev/null || true
+        
+        # 检查是否成功应用
+        if ! grep -q "CONFIG_KSU_MANUAL_HOOK" .config 2>/dev/null; then
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+        fi
+    
+    - name: Configure kernel with KernelSU options
+      run: |
+        cd kernel
+        # 确保配置包含KernelSU
         if [ -f "arch/arm64/configs/oneplus_msm8998_defconfig" ]; then
           make oneplus_msm8998_defconfig
         else
           make defconfig
         fi
+        echo "CONFIG_KSU=y" >> .config
+        echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+        make olddefconfig
+
 
     - name: Build kernel
       run: |
