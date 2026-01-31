@@ -1,0 +1,73 @@
+name: Build Kernel with KernelSU
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 编译可能耗时较长
+
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        repository: ederevx/x-ft_kernel_oneplus_msm8998
+        path: kernel
+
+    - name: Set up build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libncurses-dev \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          bc \
+          git \
+          curl \
+          wget \
+          gcc-aarch64-linux-gnu \
+          binutils-aarch64-linux-gnu
+
+    - name: Setup KernelSU (builtin)
+      run: |
+        cd kernel
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s builtin
+
+    - name: Configure kernel
+      run: |
+        cd kernel
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        # 使用默认配置或设备特定配置（如果存在）
+        if [ -f "arch/arm64/configs/oneplus_msm8998_defconfig" ]; then
+          make oneplus_msm8998_defconfig
+        else
+          make defconfig
+        fi
+
+    - name: Build kernel
+      run: |
+        cd kernel
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        # 启用并行编译加速
+        make -j$(nproc)
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build-output
+        path: |
+          kernel/arch/arm64/boot/Image.gz-dtb
+          kernel/arch/arm64/boot/Image
+          kernel/arch/arm64/boot/dts/qcom/*.dtb
+        if-no-files-found: error
+        retention-days: 7
