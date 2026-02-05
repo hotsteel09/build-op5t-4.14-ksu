@@ -72,12 +72,7 @@ jobs:
 
     - name: Make kernel
       run: |
-        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
-        if [ $? -ne 0 ]; then
-          echo "编译失败，检查错误信息"
-          cat build.log
-          exit 1
-        fi
+        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
     - name: Upload kernel
       uses: actions/upload-artifact@v4
