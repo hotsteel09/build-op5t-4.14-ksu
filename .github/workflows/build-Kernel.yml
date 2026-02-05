@@ -69,7 +69,7 @@ jobs:
           sed -i '1i\#if 0' arch/arm64/kernel/perf_trace_counters.c
           sed -i '1a\#endif' arch/arm64/kernel/perf_trace_counters.c
         fi
-
+    
     - name: Make kernel
       run: |
         make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
@@ -79,10 +79,64 @@ jobs:
           exit 1
         fi
 
-    - name: Upload kernel
+    - name: rename
+      run: |
+        # 查看编译生成了哪些文件
+        ls -la arch/arm64/boot/
+        
+        # 找到Image文件并重命名为正确的名字
+        if [ -f "arch/arm64/boot/Image" ]; then
+          cp arch/arm64/boot/Image arch/arm64/boot/anukernel3
+          echo "已将Image重命名为anukernel3"
+        elif [ -f "arch/arm64/boot/Image.gz" ]; then
+          cp arch/arm64/boot/Image.gz arch/arm64/boot/anukernel3.gz
+          echo "已将Image.gz重命名为anukernel3.gz"
+        fi
+        
+        # 检查Makefile中的输出配置
+        grep -n "Image\|KERNELRELEASE\|EXTRAVERSION" Makefile | head -20
+
+    - name: make ak3
+      run: |
+        # 创建刷机包目录
+        mkdir -p kernel_zip/META-INF/com/google/android
+        
+        # 复制内核文件
+        if [ -f "arch/arm64/boot/anukernel3" ]; then
+          cp arch/arm64/boot/anukernel3 kernel_zip/
+        fi
+        
+        # 复制dtb文件（如果有）
+        if [ -d "arch/arm64/boot/dts" ]; then
+          cp -r arch/arm64/boot/dts kernel_zip/
+        fi
+        
+        # 创建刷机脚本（示例）
+        cat > kernel_zip/META-INF/com/google/android/updater-script << 'EOF'
+        ui_print("Flashing anukernel3...");
+        package_extract_file("anukernel3", "/tmp/kernel");
+        run_program("/sbin/dd", "if=/tmp/kernel", "of=/dev/block/bootdevice/by-name/boot");
+        delete("/tmp/kernel");
+        ui_print("Flash completed!");
+        EOF
+        
+        # 创建update-binary
+        cat > kernel_zip/META-INF/com/google/android/update-binary << 'EOF'
+        #!/sbin/sh
+        OUTFD=$2;
+        ui_print() {
+          echo "ui_print $1" > /proc/self/fd/$OUTFD;
+        }
+        EOF
+        
+        # 打包成zip
+        cd kernel_zip && zip -r9 ../anukernel3.zip * && cd ..
+
+    - name: Upload kernel files
       uses: actions/upload-artifact@v4
       with:
-        name: kernel
+        name: kernel-artifacts
         path: |
-          arch/arm64/boot/
+          arch/arm64/boot/anukernel3*
+          anukernel3.zip
         retention-days: 7
