@@ -72,102 +72,12 @@ jobs:
 
     - name: Make kernel
       run: |
-        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
-        if [ $? -ne 0 ]; then
-          echo "编译失败，检查错误信息"
-          cat build.log
-          exit 1
-        fi
+        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
-    - name: 下载AnyKernel3模板
-      run: |
-        cd /tmp
-        git clone https://github.com/osm0sis/AnyKernel3.git
-        echo "AnyKernel3 downloaded"
-
-    - name: 创建AnyKernel3刷机包
-      run: |
-        # 创建AnyKernel3目录结构
-        mkdir -p anykernel3
-        
-        # 复制AnyKernel3模板文件
-        cp -r /tmp/AnyKernel3/* anykernel3/ || true
-        
-        # 复制编译好的内核镜像
-        if [ -f "arch/arm64/boot/Image.gz" ]; then
-          cp arch/arm64/boot/Image.gz anykernel3/Image.gz
-          echo "复制Image.gz到anykernel3"
-        elif [ -f "arch/arm64/boot/Image" ]; then
-          cp arch/arm64/boot/Image anykernel3/Image
-          echo "复制Image到anykernel3"
-        fi
-        
-        # 复制dtb文件（如果需要）
-        if [ -f "arch/arm64/boot/dts/vendor/qcom/*.dtb" ]; then
-          mkdir -p anykernel3/dtbs
-          cp arch/arm64/boot/dts/vendor/qcom/*.dtb anykernel3/dtbs/
-        fi
-        
-        # 复制modules（如果需要）
-        if [ -d "out/modules" ]; then
-          cp -r out/modules anykernel3/
-        fi
-        
-        # 创建或更新anykernel.sh脚本
-        cat > anykernel3/anykernel.sh << 'EOF'
-        #!/sbin/sh
-        
-        ## AnyKernel3 setup
-        # begin properties
-        properties() { '
-        kernel.string=KernelSU Kernel
-        do.devicecheck=0
-        do.modules=0
-        do.systemless=1
-        do.cleanup=1
-        do.cleanuponabort=0
-        supported.versions=
-        supported.patchlevels=
-        '; } # end properties
-        
-        ## AnyKernel3 install
-        ui_print "  ____  __.      .__  .__   ";
-        ui_print "_/ ___\|  | ____ |  | |  |  ";
-        ui_print "\  \___|  |/    \|  | |  |  ";
-        ui_print " \___  >  |   |  \  |_|  |__";
-        ui_print "     \/|__|___|  /____/____/";
-        ui_print "               \/            ";
-        ui_print " ";
-        ui_print "Flashing Kernel with KernelSU...";
-        ui_print " ";
-        
-        # extract the Image
-        dump_boot;
-        
-        # patch cmdline
-        patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive";
-        
-        # write the Image
-        write_boot;
-        EOF
-                
-                chmod +x anykernel3/anykernel.sh
-
-    - name: 打包为AnyKernel3格式
-      run: |
-        cd anykernel3
-        # 删除不需要的文件
-        rm -rf .git README.md
-        # 打包
-        zip -r9 ../AnyKernel3-KernelSU.zip *
-        echo "AnyKernel3包已创建: AnyKernel3-KernelSU.zip"
-        cd ..
-        ls -lh *.zip
-
-    - name: 上传AnyKernel3内核包
+    - name: Upload kernel
       uses: actions/upload-artifact@v4
       with:
-        name: AnyKernel3-Kernel
+        name: kernel
         path: |
-          AnyKernel3-KernelSU.zip
+          arch/arm64/boot/
         retention-days: 7
