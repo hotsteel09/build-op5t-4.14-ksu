@@ -17,10 +17,6 @@ jobs:
         repository: ederevx/x-ft_kernel_oneplus_msm8998
         submodules: recursive
 
-    - name: Setup KernelSU
-      run: |
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -49,26 +45,6 @@ jobs:
     - name: Make config
       run: |
         make defconfig ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-
-    - name: Apply kernel patches
-      run: |
-        # 方法1: 使用更精确的sed命令，将整个函数定义改为static
-        sed -i 's/^bool kernel_page_present/static bool kernel_page_present/' arch/arm64/mm/pageattr.c || true
-        
-        # 如果方法1不工作，尝试方法2: 将整个函数体改为空
-        if ! grep -q "static bool kernel_page_present" arch/arm64/mm/pageattr.c; then
-          # 找到kernel_page_present函数并修改
-          sed -i '/^bool kernel_page_present.*{/,/^}$/c\static bool kernel_page_present(struct page *page)\n{\n    return true;\n}' arch/arm64/mm/pageattr.c
-        fi
-
-    - name: Disable unsupported tracepoint
-      run: |
-        # 解决NR_CPUS错误
-        if [ -f "arch/arm64/kernel/perf_trace_counters.c" ]; then
-          # 在perf_trace_counters.c中临时注释掉sched.h的包含
-          sed -i '1i\#if 0' arch/arm64/kernel/perf_trace_counters.c
-          sed -i '1a\#endif' arch/arm64/kernel/perf_trace_counters.c
-        fi
 
     - name: Make kernel
       run: |
