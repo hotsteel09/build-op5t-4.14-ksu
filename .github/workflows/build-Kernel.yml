@@ -38,7 +38,8 @@ jobs:
     - name: Setup toolchain
       run: |
         cd /tmp
-        wget https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+        wget https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz || \
+        wget https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
         tar -xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
         echo "PATH=/tmp/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin:$PATH" >> $GITHUB_ENV
         echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
@@ -47,6 +48,15 @@ jobs:
     - name: Make config
       run: |
         make defconfig ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+        # 修复kernel_page_present冲突：注释掉重复定义
+        sed -i '203s/^bool kernel_page_present/# bool kernel_page_present/' arch/arm64/mm/pageattr.c
+        # 或者使用更精确的匹配（如果行号可能变化）：
+        # sed -i '/kernel_page_present.*struct page \*page)/s/^/# /' arch/arm64/mm/pageattr.c
+
+    - name: Configure NR_CPUS (可选，如果仍有错误)
+      run: |
+        # 如果NR_CPUS错误仍然出现，可以手动修改.config
+        sed -i 's/CONFIG_NR_CPUS=.*/CONFIG_NR_CPUS=256/' .config || true
 
     - name: Make kernel
       run: |
